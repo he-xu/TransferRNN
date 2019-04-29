@@ -6,7 +6,9 @@ Created on Mon Apr 29 15:21:22 2019
 @author: dzenn
 """
 
-import DynapseRNN
+# exec(open("MainRNNLoop.py").read())
+
+from DynapseRNN import DynapseRNN
 from bias_tuning_tools import BiasTools
 import numpy as np
 from force import ternarize, update_weight
@@ -21,10 +23,10 @@ sys.path.append('/home/dzenn/anaconda3/envs/ctxctl3.7/lib/python3.7/site-package
 
 class MainRNNLoop():
     
-    def __init__(self, neuron_ids, pre_id_list, post_id_list, num_inputs = 128, timesteps = 28):
+    def __init__(self, num_inputs = 128, timesteps = 28):
         
         
-        self.RNNController = DynapseRNN(neuron_ids, pre_id_list, post_id_list, num_inputs, timesteps)
+        self.RNNController = DynapseRNN(num_inputs = num_inputs, timesteps = timesteps, debug = True)
         self.data = None
         
     def prepare_dataset(self):
@@ -46,16 +48,24 @@ class MainRNNLoop():
         
         
         
-if __name__ == "__main__":
+#if __name__ == "__main__":
     
-    bt = BiasTools()
+bt = BiasTools()
+bt.load_biases("reference_biases.py")
+bt.clear_cams(1)
+
+print("Initializing the main loop")
+MainLoop = MainRNNLoop()
+
+print("Loading the dataset")
+MainLoop.prepare_dataset()
+
+print("Loading complete. Starting...")
+
+for image_idx in range(10):
+    print("Showing digit %d" % (image_idx))
+    MainLoop.RNNController.present_stimulus(MainLoop.projection_train_data[image_idx], 0.5)
     
-    print("Initializing the main loop")
-    MainLoop = MainRNNLoop()
-    MainLoop.prepare_dataset()
-    
-    
-    print("Loading complete. Starting...")
-    MainLoop.start()
+
     
     
