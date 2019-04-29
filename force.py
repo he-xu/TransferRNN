@@ -8,9 +8,9 @@ def ternarize(w_new, cam_num):
     w_undone[w_undone<0] = -1
     return w_undone
 
-def update_weight(rate_psc, rate_teacher, w_real, w_ternary, cam_num=63, learning_rate=0.1):
+def update_weight(rate_psc, rate_teacher, w_real, w_ternary, n=6, m=1, cam_num=63, learning_rate=0.1):
     rate_recurrent = w_ternary.dot(rate_psc)
-    rate_teacher_tile = np.tile(rate_teacher, (2,1))
+    rate_teacher_tile = np.tile(rate_teacher, (n,m))
     error = rate_recurrent - rate_teacher_tile
     d_w = 0
     for t in range(num_timesteps):
