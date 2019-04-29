@@ -21,6 +21,11 @@ from math import exp
 import CtxDynapse
 import NeuronNeuronConnector
 from CtxDynapse import DynapseCamType as SynapseTypes
+
+import sys
+
+sys.path.append('/home/dzenn/anaconda3/envs/ctxctl3.7/lib/python3.7/site-packages')
+
 import numpy as np
 
 class DynapseRNN(object):
@@ -45,7 +50,7 @@ class DynapseRNN(object):
         self.v_model = CtxDynapse.VirtualModel()
         self.neurons = self.model.get_shadow_state_neurons()
         self.virtual_neurons = self.v_model.get_neurons()
-        self.neuron_ids = None
+        self.neuron_ids = []
         self.poisson_spike_gen = self.model.get_fpga_modules()[0]
         
         self.buf_evt_filter = None
@@ -66,6 +71,8 @@ class DynapseRNN(object):
         self.connector = NeuronNeuronConnector.DynapseConnector()
         
         self.learn = True
+        
+        self.debug = debug
 
         self.current_weight_matrix = {}
         
@@ -100,16 +107,27 @@ class DynapseRNN(object):
              and n.get_neuron_id() + n.get_core_id()*256 < self.num_inputs * self.multiplex_factor] 
         
         for n in self.rnn_neurons:
-            self.neuron_ids = n.get_neuron_id() + n.get_core_id()*256 = n.get_chip_id()*1024
+            self.neuron_ids.append(n.get_neuron_id() + n.get_core_id()*256 + n.get_chip_id()*1024)
             self.connector.add_connection(self.virtual_neurons[(n.get_neuron_id() + n.get_core_id()*256) % self.num_inputs],
                                           n,
                                           SynapseTypes.SLOW_EXC)
             
         self.model.apply_diff_state()
+        
+        
+        self.poisson_spike_gen.set_chip_id(chip_id)
             
         if self.debug:
             print("Connected spikegen")
         
+        pre_id_list = []
+        post_id_list = []
+        
+        for i in range(self.num_inputs * self.multiplex_factor):
+            for j in range(self.num_inputs * self.multiplex_factor):
+                pre_id_list.append(self.neuron_ids[i])
+                post_id_list.append(self.neuron_ids[j])
+                
         
         ## Prepare connectivity matrix
         for pre_id, post_id in zip(pre_id_list, post_id_list):
@@ -233,7 +251,7 @@ class DynapseRNN(object):
         
         for ts in range(self.timesteps):        
             for i in range(len(self.neuron_ids)):
-                self.poisson_spike_gen.write_poisson_rate_hz(i, stim_array[i][ts])
+                self.poisson_spike_gen.write_poisson_rate_hz(i, abs(stim_array[ts, i]*10))
             
             sleep(timestep_length)
             
