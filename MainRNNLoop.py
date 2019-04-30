@@ -51,7 +51,8 @@ class MainRNNLoop():
 #if __name__ == "__main__":
     
 bt = BiasTools()
-bt.load_biases("reference_biases.py")
+bt.load_biases("Transfer_RNN_biases.py")
+print("Clearing CAMs...")
 bt.clear_cams(1)
 
 print("Initializing the main loop")
@@ -63,8 +64,21 @@ MainLoop.prepare_dataset()
 print("Loading complete. Starting...")
 
 for image_idx in range(10):
+    print("Start recording")
+    MainLoop.RNNController.start_recording_spikes()
     print("Showing digit %d" % (image_idx))
-    MainLoop.RNNController.present_stimulus(MainLoop.projection_train_data[image_idx], 0.5)
+    MainLoop.RNNController.present_stimulus(MainLoop.projection_train_data[image_idx], 0.2)
+    print("Stopping the recording")
+    MainLoop.RNNController.stop_recording_spikes()
+    print("Processing recorded evts...")
+    rates = MainLoop.RNNController.process_recorded_evts()
+    
+    print("Computing gradients...")
+    c_grad, mean_error = MainLoop.RNNController.update_weight(np.array(rates), MainLoop.state_train_data[image_idx])
+    
+    print("C_grad: %g, mean_error %g" % (c_grad, mean_error))
+    print("Done")
+#    print(rates)
     
 
     
