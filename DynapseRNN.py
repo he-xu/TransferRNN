@@ -98,7 +98,8 @@ class DynapseRNN(object):
         
         self.error = None
         self.learning_rate = 0.1
-        self.P_prev = None  ##TODO: init P_prev
+        self.regularizer = 0.1
+
         self.multiplex_factor = multiplex_factor
         
         ### Allocating neurons
@@ -113,6 +114,11 @@ class DynapseRNN(object):
                                           SynapseTypes.SLOW_EXC)
             
         self.model.apply_diff_state()
+        
+        self.num_neurons = len(self.neuron_ids)
+        
+        
+        self.P_prev = self.regularizer*np.eye(self.num_neurons)
         
         
         self.poisson_spike_gen.set_chip_id(chip_id)
@@ -140,9 +146,21 @@ class DynapseRNN(object):
 
             self.current_weight_matrix[(pre_id, post_id)] = 0
             
+        self.init_weights()  
+        self.apply_new_matrix(self.w_ternary)
+        
         if self.debug:
             print("RNN Init Complete")
             
+    def init_weights(self, cam_num=62):
+        w_ternary = np.zeros([self.num_neurons, self.num_neurons])
+        w_ternary[:,:cam_num//2]=1
+        w_ternary[:,cam_num//2:cam_num]=-1
+        w_rand = np.random.rand(self.num_neurons, self.num_neurons)
+        w_order = np.argsort(w_rand, axis=0)
+        self.w_ternary = w_ternary.T[w_order, np.arange(w_order.shape[1])].T
+        
+        
     def start_recording_spikes(self):
         self.buf_evt_filter = CtxDynapse.BufferedEventFilter(self.model, self.neuron_ids)
         evts = self.buf_evt_filter.get_events()
@@ -165,14 +183,15 @@ class DynapseRNN(object):
             print("Counting the spikes...")
         
         # Preparing arrays and helper variables
-        for i in range(len(self.neuron_ids)):
+        for i in range(self.num_neurons):
             rates.append([])
             input_rates.append([])
             for ts in range(self.timesteps):
                 rates[i].append(0)
                 input_rates[i].append(0)
         
-        ref_timestamp = self.evts[0].timestamp
+        if len(self.evts) != 0:
+            ref_timestamp = self.evts[0].timestamp
         time_bin_size = int((self.recording_stop_time - self.recording_start_time)*1e+06/self.timesteps)
         
         # Placing spikes in bins
@@ -181,27 +200,28 @@ class DynapseRNN(object):
             idx = self.neuron_ids.index(n_id)
             
             time_bin = (evt.timestamp - ref_timestamp)//time_bin_size
+            print(idx, time_bin)
             rates[idx][time_bin] += 1
         
         # Normalizing spike counts to rates
-        for i in range(len(self.neuron_ids)):
+        for i in range(self.num_neurons):
             for ts in range(self.timesteps):
-                rates[i][ts] = rates[i][ts]/(time_bin_size*1e+06)
+                rates[i][ts] = rates[i][ts]/(time_bin_size/1e+06)
         
-        # Computing weighted input rate sums
-        for i in range(len(self.neuron_ids)):
-            pre_id = self.neuron_ids[i]
-            for post_id in self.post_lookup[pre_id]:
-                for ts in range(self.timesteps):
-                    input_rates[self.neuron_ids.index(post_id)][ts] += rates[i][ts]*self.current_weight_matrix[(pre_id, post_id)]
+#        # Computing weighted input rate sums
+#        for i in range(self.num_neurons):
+#            pre_id = self.neuron_ids[i]
+#            for post_id in self.post_lookup[pre_id]:
+#                for ts in range(self.timesteps):
+#                    input_rates[self.neuron_ids.index(post_id)][ts] += rates[i][ts]*self.current_weight_matrix[(pre_id, post_id)]
                     
         if self.debug:
             print("Returning rates...")
                     
-        return rates, input_rates
+        return rates #, input_rates
     
     
-    def apply_new_matrix(self, matrix):
+    def apply_new_matrix(self, w_ternary):
         """
             Applies weight update to the chip
         """
@@ -209,28 +229,48 @@ class DynapseRNN(object):
         if self.debug:
             print("Applying connectivity changes...")
         
-        for i in len(self.pre_lookup):
-            for j in len(self.post_lookup):
+        for i in range(len(self.pre_lookup)):
+            for j in range(len(self.post_lookup)):
                 pre_id = self.neuron_ids[i]
                 post_id = self.neuron_ids[j]
                 current_w = self.current_weight_matrix[(pre_id, post_id)]
-                delta_w = matrix[i][j] - current_w
+                delta_w = w_ternary[j][i] - current_w
                 
+#                if self.debug:
+#                    print("Delta: ", delta_w)
                 
-                for conn_idx in range(abs(delta_w)):
+                for conn_idx in range(int(abs(delta_w))):
                     if delta_w > 0:
                         if current_w < 0:
-                            self.connector.remove_connection(pre_id, post_id)
-                        else:
-                            self.connector.add_connection(pre_id, post_id, SynapseTypes.FAST_EXC)
+                            self.connector.remove_connection(self.neurons[pre_id], self.neurons[post_id])
+                            
+                    elif delta_w < 0:
+                        if current_w > 0:
+                            self.connector.remove_connection(self.neurons[pre_id], self.neurons[post_id])
+                            
+                    self.current_weight_matrix[(pre_id, post_id)] = w_ternary[j][i]
+                    
+        for i in range(len(self.pre_lookup)):
+            for j in range(len(self.post_lookup)):
+                pre_id = self.neuron_ids[i]
+                post_id = self.neuron_ids[j]
+                current_w = self.current_weight_matrix[(pre_id, post_id)]
+                delta_w = w_ternary[j][i] - current_w
+                
+#                if self.debug:
+#                    print("Delta: ", delta_w)
+                
+                for conn_idx in range(int(abs(delta_w))):
+                    if delta_w > 0:
+                        if current_w >= 0:
+                            self.connector.add_connection(self.neurons[pre_id], self.neurons[post_id], SynapseTypes.FAST_EXC)
                             
                     elif delta_w < 0:
                         if current_w <= 0:
-                            self.connector.add_connection(pre_id, post_id, SynapseTypes.FAST_INH)
-                        else:
-                            self.connector.remove_connection(pre_id, post_id)
+                            self.connector.add_connection(self.neurons[pre_id], self.neurons[post_id], SynapseTypes.SLOW_INH)
                             
-                    self.current_weight_matrix[(pre_id, post_id)] = matrix[i][j]
+                    self.current_weight_matrix[(pre_id, post_id)] = w_ternary[j][i]
+                    
         
         self.model.apply_diff_state()
         
@@ -250,12 +290,12 @@ class DynapseRNN(object):
         self.poisson_spike_gen.start()
         
         for ts in range(self.timesteps):        
-            for i in range(len(self.neuron_ids)):
+            for i in range(self.num_neurons):
                 self.poisson_spike_gen.write_poisson_rate_hz(i, abs(stim_array[ts, i]*10))
             
             sleep(timestep_length)
             
-        for i in range(len(self.neuron_ids)):
+        for i in range(self.num_neurons):
             self.poisson_spike_gen.write_poisson_rate_hz(i, 0)
             
         self.poisson_spike_gen.stop()
@@ -263,7 +303,7 @@ class DynapseRNN(object):
         if self.debug:
             print("Done.")
         
-    def ternarize(w_new, cam_num):
+    def ternarize(self, w_new, cam_num):
         """
         
         """
@@ -276,63 +316,34 @@ class DynapseRNN(object):
         w_undone[w_undone<0] = -1
         return w_undone
 
-    def update_weight(self, rate_psc, rate_teacher, w_ternary, cam_num=63, learning_rate=0.1):
+    def update_weight(self, rate_psc, rate_teacher, cam_num=62, learning_rate=0.1):
         """
             Returns:
                 w_ternary : new on-chip connectivity matrix
                 c_grad : increase\decrease global activity level
         """
-        rate_recurrent = w_ternary.dot(rate_psc)
-        rate_teacher_tile = np.tile(rate_teacher, (2,1))
+        rate_recurrent = self.w_ternary.dot(rate_psc)
+        rate_teacher_tile = np.tile(rate_teacher.T, (self.multiplex_factor,1))
         self.error = rate_recurrent - rate_teacher_tile
         d_w = 0
         for t in range(self.timesteps):
             r_t = rate_psc[:, t][:,np.newaxis]
-            P_up = P_prev.dot(r_t.dot(r_t.T.dot(P_prev)))
-            P_down = 1 + r_t.T.dot(P_prev.dot(r_t))
-            P_t =  P_prev - P_up / P_down
-            e_t = error[:, t][:,np.newaxis]
-            d_w += e_t.dot(r_t.T.dot(P_t))
-        d_w = d_w / num_timesteps
-        w_new = w_ternary - learning_rate*d_w
-        w_ternary = ternarize(w_new, cam_num)
-        norm_ratio = np.linalg.norm(w_new, 'fro')/np.linalg.norm(w_ternary, 'fro')
+            P_up = self.P_prev.dot(r_t.dot(r_t.T.dot(self.P_prev)))
+            P_down = 1 + r_t.T.dot(self.P_prev.dot(r_t))
+            self.P_prev =  self.P_prev - P_up / P_down
+            e_t = self.error[:, t][:,np.newaxis]
+            d_w += e_t.dot(r_t.T.dot(self.P_prev))
+        d_w = d_w / self.timesteps
+        w_new = self.w_ternary - learning_rate*d_w
+        norm_ratio = np.linalg.norm(w_new, 'fro')/np.linalg.norm(self.w_ternary, 'fro')
+        
+        self.w_ternary = self.ternarize(w_new, cam_num)
+
         if norm_ratio > 1:
             c_grad = 1
         else:
             c_grad = -1
-        return w_ternary, c_grad
-        
-    
-    def connect_spikegen(self, chip_id, syn_type_int):
-        """ Creates connections from virtual neuron 1 to all neurons of the selected chip
-        using selected syn_type.
-        
-        Args:
-            chip_id (int): stimulated chip ID
-            syn_type_int (int): integer synapse type to be converted to DynapseCamType withing the method
-        """
-        
-        self.spikegen_target_chip = chip_id
-        
-        if syn_type_int == 0:
-            syn_type = SynTypes.SLOW_INH
-        elif syn_type_int == 1:
-            syn_type = SynTypes.FAST_INH
-        elif syn_type_int == 2:
-            syn_type = SynTypes.SLOW_EXC
-        elif syn_type_int == 3:
-            syn_type = SynTypes.FAST_EXC
-        else:
-            print("Unable syn type, please try again")
-            return
-        
-        for n in range(1024):
-            self.connector.add_connection(pre=self.virtual_neurons[1],
-                                          post=self.neurons[n + 1024*chip_id],
-                                          synapse_type=syn_type)
-        
-        self.model.apply_diff_state()
+        return c_grad, np.abs(self.error).mean()
         
         
         
