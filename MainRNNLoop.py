@@ -23,8 +23,7 @@ sys.path.append('/home/dzenn/anaconda3/envs/ctxctl3.7/lib/python3.7/site-package
 
 class MainRNNLoop():
     
-    def __init__(self, num_inputs = 128, timesteps = 28):
-        
+    def __init__(self, num_inputs = 128, timesteps = 28):        
         
         self.RNNController = DynapseRNN(num_inputs = num_inputs, timesteps = timesteps, debug = True)
         self.data = None
@@ -51,7 +50,7 @@ class MainRNNLoop():
 #if __name__ == "__main__":
     
 bt = BiasTools()
-bt.load_biases("Transfer_RNN_biases.py")
+bt.load_biases("best_bias.py")
 print("Clearing CAMs...")
 bt.clear_cams(1)
 
@@ -63,22 +62,25 @@ MainLoop.prepare_dataset()
 
 print("Loading complete. Starting...")
 
-for image_idx in range(10):
+for image_idx in range(100):
     print("Start recording")
     MainLoop.RNNController.start_recording_spikes()
     print("Showing digit %d" % (image_idx))
-    MainLoop.RNNController.present_stimulus(MainLoop.projection_train_data[image_idx], 0.2)
+    MainLoop.RNNController.present_stimulus(MainLoop.projection_train_data[image_idx], 1/28)
     print("Stopping the recording")
     MainLoop.RNNController.stop_recording_spikes()
     print("Processing recorded evts...")
     rates = MainLoop.RNNController.process_recorded_evts()
+    print(np.array(rates))
     
     print("Computing gradients...")
-    c_grad, mean_error = MainLoop.RNNController.update_weight(np.array(rates), MainLoop.state_train_data[image_idx])
+    c_grad, mean_error = MainLoop.RNNController.update_weight(np.array(rates), (MainLoop.state_train_data[image_idx])*50, learning_rate = 0.0008)
+    
+    MainLoop.RNNController.apply_new_matrix(MainLoop.RNNController.w_ternary, False)
     
     print("C_grad: %g, mean_error %g" % (c_grad, mean_error))
     print("Done")
-#    print(rates)
+#    
     
 
     
