@@ -98,7 +98,7 @@ class DynapseRNN(object):
         
         self.error = None
         self.learning_rate = 0.1
-        self.regularizer = 0.1
+        self.regularizer = 1
 
         self.multiplex_factor = multiplex_factor
         
@@ -111,7 +111,7 @@ class DynapseRNN(object):
             self.neuron_ids.append(n.get_neuron_id() + n.get_core_id()*256 + n.get_chip_id()*1024)
             self.connector.add_connection(self.virtual_neurons[(n.get_neuron_id() + n.get_core_id()*256) % self.num_inputs],
                                           n,
-                                          SynapseTypes.SLOW_EXC)
+                                          SynapseTypes.FAST_EXC)
             
         self.model.apply_diff_state()
         
@@ -146,7 +146,7 @@ class DynapseRNN(object):
 
             self.current_weight_matrix[(pre_id, post_id)] = 0
             
-        self.init_weights()  
+        self.init_weights()
         self.apply_new_matrix(self.w_ternary)
         
         if self.debug:
@@ -200,8 +200,9 @@ class DynapseRNN(object):
             idx = self.neuron_ids.index(n_id)
             
             time_bin = (evt.timestamp - ref_timestamp)//time_bin_size
-            print(idx, time_bin)
-            rates[idx][time_bin] += 1
+#            print(idx, time_bin)
+            if time_bin < self.timesteps:
+                rates[idx][time_bin] += 1
         
         # Normalizing spike counts to rates
         for i in range(self.num_neurons):
@@ -221,13 +222,57 @@ class DynapseRNN(object):
         return rates #, input_rates
     
     
-    def apply_new_matrix(self, w_ternary):
+    def apply_new_matrix(self, w_ternary, print_w = False):
         """
             Applies weight update to the chip
         """
         
         if self.debug:
             print("Applying connectivity changes...")
+            
+        num_conns_removed = 0
+        num_conns_created = 0
+        
+#        for i in range(len(self.pre_lookup)):
+#            for j in range(len(self.post_lookup)):
+#                pre_id = self.neuron_ids[i]
+#                post_id = self.neuron_ids[j]
+#                if (self.current_weight_matrix[(pre_id, post_id)]) != 0:
+#                    self.connector.remove_connection(self.neurons[pre_id], self.neurons[post_id])
+#                    if i == 0:
+#                        print()
+#                    num_conns_removed += 1
+#                    self.current_weight_matrix[(pre_id, post_id)] -= 1
+#                    
+#        if self.debug:
+#            print("Done.")
+#            print("Neuron 0 matrix sum", np.abs(w_ternary[0, :]).sum())
+#            print("%d conns removed, %d conns created" % (num_conns_removed, num_conns_created))
+#        
+#        self.model.apply_diff_state()
+#        
+#        arr = [i.get_pre_neuron_id() for i in self.neurons[self.neuron_ids[0]].get_cams()]
+#        print(arr)
+#        
+#        for i in range(len(self.pre_lookup)):
+#            for j in range(len(self.post_lookup)):
+#                pre_id = self.neuron_ids[i]
+#                post_id = self.neuron_ids[j]
+#                
+#                if print_w:
+#                    print(w_ternary[j][i], i, j)
+#                if (w_ternary[j][i]) != 0:
+#                    if w_ternary[j][i] > 0:
+#                        self.connector.add_connection(self.neurons[pre_id], self.neurons[post_id], SynapseTypes.SLOW_EXC)
+#                        num_conns_created += 1
+#                        self.current_weight_matrix[(pre_id, post_id)] += 1
+#                    if w_ternary[j][i] < 0:
+#                        self.connector.add_connection(self.neurons[pre_id], self.neurons[post_id], SynapseTypes.FAST_INH)
+#                        num_conns_created += 1
+#                        self.current_weight_matrix[(pre_id, post_id)] += 1
+#                    
+#        arr = [i.get_pre_neuron_id() for i in self.neurons[self.neuron_ids[0]].get_cams()]
+#        print(arr)
         
         for i in range(len(self.pre_lookup)):
             for j in range(len(self.post_lookup)):
@@ -237,18 +282,29 @@ class DynapseRNN(object):
                 delta_w = w_ternary[j][i] - current_w
                 
 #                if self.debug:
-#                    print("Delta: ", delta_w)
+#                    print(w_ternary[j][i], current_w)
+#                    print("Delta: ", int(abs(delta_w)))
                 
                 for conn_idx in range(int(abs(delta_w))):
+                    if print_w:
+                        print("removal phase")
+                        print(delta_w, current_w, w_ternary[j][i], i, j)
+                    
                     if delta_w > 0:
                         if current_w < 0:
                             self.connector.remove_connection(self.neurons[pre_id], self.neurons[post_id])
+                            num_conns_removed += 1
+                            self.current_weight_matrix[(pre_id, post_id)] += 1
                             
                     elif delta_w < 0:
                         if current_w > 0:
                             self.connector.remove_connection(self.neurons[pre_id], self.neurons[post_id])
+                            num_conns_removed += 1
+                            self.current_weight_matrix[(pre_id, post_id)] -= 1
+                    
+                    current_w = self.current_weight_matrix[(pre_id, post_id)]
                             
-                    self.current_weight_matrix[(pre_id, post_id)] = w_ternary[j][i]
+
                     
         for i in range(len(self.pre_lookup)):
             for j in range(len(self.post_lookup)):
@@ -258,24 +314,36 @@ class DynapseRNN(object):
                 delta_w = w_ternary[j][i] - current_w
                 
 #                if self.debug:
-#                    print("Delta: ", delta_w)
+#                    print(w_ternary[j][i], current_w)
+#                    print("Delta: ", int(abs(delta_w)))
                 
                 for conn_idx in range(int(abs(delta_w))):
+                    if print_w:
+                        print("addition phase")
+                        print(delta_w, current_w, w_ternary[j][i], i, j)
+                    
                     if delta_w > 0:
                         if current_w >= 0:
                             self.connector.add_connection(self.neurons[pre_id], self.neurons[post_id], SynapseTypes.FAST_EXC)
+                            num_conns_created += 1
+                            self.current_weight_matrix[(pre_id, post_id)] += 1
                             
                     elif delta_w < 0:
                         if current_w <= 0:
-                            self.connector.add_connection(self.neurons[pre_id], self.neurons[post_id], SynapseTypes.SLOW_INH)
+                            self.connector.add_connection(self.neurons[pre_id], self.neurons[post_id], SynapseTypes.FAST_INH)
+                            num_conns_created += 1
+                            self.current_weight_matrix[(pre_id, post_id)] -= 1
                             
-                    self.current_weight_matrix[(pre_id, post_id)] = w_ternary[j][i]
+                    current_w = self.current_weight_matrix[(pre_id, post_id)]
+                            
                     
         
         self.model.apply_diff_state()
         
         if self.debug:
             print("Done.")
+            print("Neuron 0 matrix sum", np.abs(w_ternary[0, :]).sum())
+            print("%d conns removed, %d conns created" % (num_conns_removed, num_conns_created))
                 
         
     
@@ -291,7 +359,7 @@ class DynapseRNN(object):
         
         for ts in range(self.timesteps):        
             for i in range(self.num_neurons):
-                self.poisson_spike_gen.write_poisson_rate_hz(i, abs(stim_array[ts, i]*10))
+                self.poisson_spike_gen.write_poisson_rate_hz(i, (stim_array[ts, i] + 5)*10)
             
             sleep(timestep_length)
             
@@ -332,12 +400,16 @@ class DynapseRNN(object):
             P_down = 1 + r_t.T.dot(self.P_prev.dot(r_t))
             self.P_prev =  self.P_prev - P_up / P_down
             e_t = self.error[:, t][:,np.newaxis]
-            d_w += e_t.dot(r_t.T.dot(self.P_prev))
+#            d_w += e_t.dot(r_t.T.dot(self.P_prev))
+            d_w += e_t.dot(r_t.T)
         d_w = d_w / self.timesteps
         w_new = self.w_ternary - learning_rate*d_w
         norm_ratio = np.linalg.norm(w_new, 'fro')/np.linalg.norm(self.w_ternary, 'fro')
         
         self.w_ternary = self.ternarize(w_new, cam_num)
+        
+        print(d_w.mean(), d_w.max(), d_w.min())
+        print(rate_recurrent.mean(), rate_teacher.mean())
 
         if norm_ratio > 1:
             c_grad = 1
