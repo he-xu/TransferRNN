@@ -6,15 +6,6 @@ Created on Tue Jan 22 16:09:09 2019
 @author: dzenn
 """
 
-#from ctxctl_rl_stdp_connection_multi import RLSTDPConnectionMulti; conn = RLSTDPConnectionMulti([256*4 + 176], [256*4 + 188], debug = True)
-#from ctxctl_rl_stdp_connection_multi import RLSTDPConnectionMulti; conn = RLSTDPConnectionMulti([256*4 + 20], [256*4 + 24], debug = True)
-#conn.record = True; conn.record_da = True
-#conn.record = False; conn.record_da = False
-#conn.export_raster(); conn.export_traces()
-
-#conn.record_timings = True
-#conn.record_timings = False
-#conn.export_diffs()
 
 from time import clock, sleep, time
 from math import exp
@@ -43,7 +34,7 @@ class DynapseRNN(object):
        on-chip connections.
     """
         
-    def __init__(self, num_inputs, timesteps, multiplex_factor = 1, chip_id = 1, debug = False):
+    def __init__(self, num_inputs, timesteps, multiplex_factor = 1, chip_id_proxy = 3, chip_id = 1, debug = False):
         
         self.creation_time = time()
         self.model = CtxDynapse.model
@@ -105,13 +96,33 @@ class DynapseRNN(object):
         ### Allocating neurons
         
         self.rnn_neurons = [n for n in self.neurons if n.get_chip_id()==chip_id
-             and n.get_neuron_id() + n.get_core_id()*256 < self.num_inputs * self.multiplex_factor] 
+             and (n.get_neuron_id() + n.get_core_id()*256) < self.num_inputs * self.multiplex_factor]
         
+        self.proxy_neurons = [n for n in self.neurons if n.get_chip_id()==chip_id_proxy
+             and (n.get_neuron_id() + n.get_core_id()*256) < self.num_inputs*2] 
+        
+        for n in self.proxy_neurons:
+            self.connector.add_connection(self.virtual_neurons[(n.get_neuron_id())],
+                                          n,
+                                          SynapseTypes.SLOW_EXC)
+            self.connector.add_connection(self.virtual_neurons[(n.get_neuron_id())],
+                                          n,
+                                          SynapseTypes.SLOW_EXC)
+            
         for n in self.rnn_neurons:
             self.neuron_ids.append(n.get_neuron_id() + n.get_core_id()*256 + n.get_chip_id()*1024)
-            self.connector.add_connection(self.virtual_neurons[(n.get_neuron_id() + n.get_core_id()*256) % self.num_inputs],
+            self.connector.add_connection(self.proxy_neurons[(n.get_neuron_id()) % self.num_inputs],
                                           n,
-                                          SynapseTypes.FAST_EXC)
+                                          SynapseTypes.SLOW_EXC)
+            self.connector.add_connection(self.proxy_neurons[(n.get_neuron_id()) % self.num_inputs],
+                                          n,
+                                          SynapseTypes.SLOW_EXC)
+            self.connector.add_connection(self.proxy_neurons[((n.get_neuron_id()) % self.num_inputs) + self.num_inputs],
+                                          n,
+                                          SynapseTypes.SLOW_INH)
+            self.connector.add_connection(self.proxy_neurons[((n.get_neuron_id()) % self.num_inputs) + self.num_inputs],
+                                          n,
+                                          SynapseTypes.SLOW_INH)
             
         self.model.apply_diff_state()
         
@@ -121,7 +132,7 @@ class DynapseRNN(object):
         self.P_prev = self.regularizer*np.eye(self.num_neurons)
         
         
-        self.poisson_spike_gen.set_chip_id(chip_id)
+        self.poisson_spike_gen.set_chip_id(chip_id_proxy)
             
         if self.debug:
             print("Connected spikegen")
@@ -152,7 +163,7 @@ class DynapseRNN(object):
         if self.debug:
             print("RNN Init Complete")
             
-    def init_weights(self, cam_num=62):
+    def init_weights(self, cam_num=60):
         w_ternary = np.zeros([self.num_neurons, self.num_neurons])
         w_ternary[:,:cam_num//2]=1
         w_ternary[:,cam_num//2:cam_num]=-1
@@ -358,12 +369,16 @@ class DynapseRNN(object):
         self.poisson_spike_gen.start()
         
         for ts in range(self.timesteps):        
-            for i in range(self.num_neurons):
-                self.poisson_spike_gen.write_poisson_rate_hz(i, (stim_array[ts, i] + 5)*10)
+            for i in range(self.num_inputs):
+                rate = stim_array[ts, i]*100
+                if rate >= 0:
+                    self.poisson_spike_gen.write_poisson_rate_hz(i, rate)
+                else:
+                    self.poisson_spike_gen.write_poisson_rate_hz(i + self.num_inputs, abs(rate))
             
             sleep(timestep_length)
             
-        for i in range(self.num_neurons):
+        for i in range(self.num_inputs):
             self.poisson_spike_gen.write_poisson_rate_hz(i, 0)
             
         self.poisson_spike_gen.stop()
@@ -383,8 +398,36 @@ class DynapseRNN(object):
         w_undone[w_undone>0] = 1
         w_undone[w_undone<0] = -1
         return w_undone
+    
+    
+    def stochastic_round(self, w_ternary, d_w, cam_num):
+        """
+            
+        """
+        w_new = w_ternary - d_w
+        w_uniform = np.random.uniform(size=d_w.shape)
+        d_w_rounded = ((w_uniform < np.abs(d_w))*np.sign(d_w)).astype(np.int)
+        w_new_rounded = w_ternary - d_w_rounded
+        w_new_rounded[w_new_rounded>1] = 1
+        w_new_rounded[w_new_rounded<-1] = -1
+        
+        w_order = np.argsort(np.abs(w_new.T), axis=0)
+        w_new_rounded_sorted = w_new_rounded.T[w_order, np.arange(w_order.shape[1])]
+        num_neuron = w_order.shape[1]
+        for idx_post in range(num_neuron):
+            cam_used = 0
+            for idx_pre in range(num_neuron):
+                w_ij = w_new_rounded_sorted[-idx_pre, idx_post]
+                if np.abs(w_ij) > 0.1:
+                    cam_used += 1
+                if cam_used >= cam_num:
+                    w_new_rounded_sorted[:-idx_pre, idx_post] = 0
+                    break
+        w_order_order = np.argsort(w_order, axis=0)
+        w_undone = w_new_rounded_sorted[w_order_order, np.arange(w_order_order.shape[1])].T
+        return w_undone
 
-    def update_weight(self, rate_psc, rate_teacher, cam_num=62, learning_rate=0.1):
+    def update_weight(self, rate_psc, rate_teacher, cam_num=60, learning_rate=0.1):
         """
             Returns:
                 w_ternary : new on-chip connectivity matrix
@@ -405,8 +448,9 @@ class DynapseRNN(object):
         d_w = d_w / self.timesteps
         w_new = self.w_ternary - learning_rate*d_w
         norm_ratio = np.linalg.norm(w_new, 'fro')/np.linalg.norm(self.w_ternary, 'fro')
+        self.w_ternary = self.stochastic_round(self.w_ternary, learning_rate*d_w, cam_num)
         
-        self.w_ternary = self.ternarize(w_new, cam_num)
+        #self.w_ternary = self.ternarize(w_new, cam_num)
         
         print(d_w.mean(), d_w.max(), d_w.min())
         print(rate_recurrent.mean(), rate_teacher.mean())
