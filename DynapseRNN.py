@@ -119,10 +119,10 @@ class DynapseRNN(object):
                                           SynapseTypes.SLOW_EXC)
             self.connector.add_connection(self.proxy_neurons[((n.get_neuron_id()) % self.num_inputs) + self.num_inputs],
                                           n,
-                                          SynapseTypes.SLOW_INH)
+                                          SynapseTypes.FAST_INH)
             self.connector.add_connection(self.proxy_neurons[((n.get_neuron_id()) % self.num_inputs) + self.num_inputs],
                                           n,
-                                          SynapseTypes.SLOW_INH)
+                                          SynapseTypes.FAST_INH)
             
         self.model.apply_diff_state()
         
@@ -157,7 +157,8 @@ class DynapseRNN(object):
 
             self.current_weight_matrix[(pre_id, post_id)] = 0
             
-        self.init_weights()
+#        self.init_weights()
+        self.w_ternary = np.zeros([self.num_neurons, self.num_neurons])
         self.apply_new_matrix(self.w_ternary)
         
         if self.debug:
@@ -355,6 +356,8 @@ class DynapseRNN(object):
             print("Done.")
             print("Neuron 0 matrix sum", np.abs(w_ternary[0, :]).sum())
             print("%d conns removed, %d conns created" % (num_conns_removed, num_conns_created))
+            
+        self.conn_log.append([num_conns_removed, num_conns_created])
                 
         
     

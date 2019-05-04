@@ -25,7 +25,7 @@ class MainRNNLoop():
     
     def __init__(self, num_inputs = 128, timesteps = 28):        
         
-        self.RNNController = DynapseRNN(num_inputs = num_inputs, timesteps = timesteps, multiplex_factor = 1, debug = True)
+        self.RNNController = DynapseRNN(num_inputs = num_inputs, timesteps = timesteps, multiplex_factor = 2, debug = True)
         self.recorded_error = []
         
     def prepare_dataset(self):
@@ -55,6 +55,16 @@ class MainRNNLoop():
             f_out.write(str(err) + "\n")
         f_out.close()
         
+    def export_conn_log(self, filename = "RNNConnLog.dat"):
+        """
+            Export all recorded events
+        """
+#        f_out = open(str(datetime.datetime.now()) + " " + filename, "wb")        
+        f_out = open(filename, "w")
+        for item in self.RNNController.conn_log:
+            f_out.write(str(item[0]) + " " + str(item[1]) + "\n")
+        f_out.close()
+        
         
     def start(self):
         pass
@@ -65,15 +75,15 @@ def run_loop(num_digits):
         print("Start recording")
         MainLoop.RNNController.start_recording_spikes()
         print("Showing digit %d" % (image_idx))
-        MainLoop.RNNController.present_stimulus(MainLoop.projection_train_data[1], 2/6)
+        MainLoop.RNNController.present_stimulus(MainLoop.projection_train_data[image_idx], 2/6)
         print("Stopping the recording")
         MainLoop.RNNController.stop_recording_spikes()
         print("Processing recorded evts...")
         rates = MainLoop.RNNController.process_recorded_evts()
-        print(np.array(rates))
+        print(np.array(rates)/100)
         
         print("Computing gradients...")
-        c_grad, mean_error = MainLoop.RNNController.update_weight(np.array(rates), (MainLoop.state_train_data[1])*400, learning_rate = 0.01)
+        c_grad, mean_error = MainLoop.RNNController.update_weight(np.array(rates)/100, (MainLoop.state_train_data[image_idx]), learning_rate = 0.01)
         
         MainLoop.recorded_error.append(mean_error)
         
@@ -85,9 +95,9 @@ def run_loop(num_digits):
 #if __name__ == "__main__":
     
 bt = BiasTools()
-bt.load_biases("reasonable_rnn_biases.py")
-bt.copy_biases(4,5)
-bt.copy_biases(4,12)
+bt.load_biases("256_biases.py")
+#bt.copy_biases(4,5)
+#bt.copy_biases(4,12)
 print("Clearing CAMs...")
 bt.clear_cams(1)
 bt.clear_cams(3)
@@ -100,9 +110,10 @@ MainLoop.prepare_dataset()
 
 print("Loading complete. Starting...")
 
-run_loop(200)
+run_loop(100)
 #    
     
 MainLoop.export_error()
+MainLoop.export_conn_log()
     
     
