@@ -8,8 +8,14 @@ Created on Mon Apr 29 15:21:22 2019
 
 #exec(open("MainRNNLoop.py").read())
 
+
 try:
     from DynapseRNN import DynapseRNN
+    from matplotlib import pyplot as plt
+    from random import sample
+    from IPython import get_ipython
+    get_ipython().run_line_magic('matplotlib', 'inline')
+
 except ModuleNotFoundError:
     print("Trying to load Dynapse RNN from outside TransferRNN directory")
     from TransferRNN.DynapseRNN import DynapseRNN
@@ -28,9 +34,14 @@ import pickle
 
 class MainRNNLoop():
     
-    def __init__(self, num_inputs = 128, timesteps = 28, backend = "ctxctl", c = None):     
+    def __init__(self, num_inputs = 128, timesteps = 28, multiplex_factor = 2, backend = "ctxctl", c = None):     
         
-        self.RNNController = DynapseRNN(num_inputs=num_inputs, timesteps=timesteps, multiplex_factor=2, backend=backend, c=c, debug=True)
+        self.RNNController = DynapseRNN(num_inputs=num_inputs, timesteps=timesteps, multiplex_factor=multiplex_factor, backend=backend, c=c, debug=True)
+        self.backend = backend
+        self.num_inputs = num_inputs
+        self.timesteps = timesteps
+        self.multiplex_factor = multiplex_factor
+        self.c = c
         self.recorded_error = []
         
     def prepare_dataset(self, dataset_path = ""):
@@ -112,8 +123,18 @@ class MainRNNLoop():
             rates = self.RNNController.process_recorded_evts()
             print(np.array(rates)/100)
             
+            if self.backend == 'rpyc':
+                ids = sample(range(self.num_inputs), 4)
+                rate_recurrent = self.RNNController.w_ternary.dot(np.array(rates)/100)
+                rate_teacher = self.state_train_data[0]
+                rate_teacher_tile = np.tile(rate_teacher.T, (self.multiplex_factor,1))
+                for idx in ids:
+                    plt.figure(idx)
+                    plt.plot(range(len(rate_recurrent[idx])), rate_recurrent[idx], 'r--', range(len(rate_teacher_tile[idx])), rate_teacher_tile[idx], 'b--')
+                    plt.show()
+            
             print("Computing gradients...")
-            c_grad, mean_error = self.RNNController.update_weight(np.array(rates)/100, (self.state_train_data[image_idx]), learning_rate = 0.01)
+            c_grad, mean_error = self.RNNController.update_weight(np.array(rates)/100, (self.state_train_data[0]), learning_rate = 0.01)
             
             self.recorded_error.append(mean_error)
             
