@@ -15,6 +15,7 @@ try:
     import NeuronNeuronConnector
     from CtxDynapse import DynapseCamType as SynapseType
 except ModuleNotFoundError:
+    import rpyc
     print("CtxDynapse module not imported. Expecting to run in RPyC mode")
 
 import numpy as np
@@ -68,6 +69,8 @@ class DynapseRNN(object):
                 self.v_model = c.modules.CtxDynapse.VirtualModel()
                 self.connector = c.modules.NeuronNeuronConnector.DynapseConnector()
                 self.SynapseType = c.modules.CtxDynapse.DynapseCamType
+#                c.execute("from time import time, clock, sleep")
+#                c.execute("import CtxDynapse")
             else:
                 raise ValueError("Selected backend is 'rpyc' but no connection object is given to DynapseRNN")
         else:
@@ -84,6 +87,8 @@ class DynapseRNN(object):
         self.evts = []
         self.recording_start_time = None
         self.recording_stop_time = None
+        
+        self.teleported_functions = [] # list of functions teleported with rpyc
         
         self.num_inputs = num_inputs
         self.timesteps = timesteps
@@ -103,14 +108,8 @@ class DynapseRNN(object):
 
         self.current_weight_matrix = {}
         
-        self.record = False
-        self.record_da = False
-        self.record_timings = False
-        self.record_conn_log = False
-        
         self.conns_created = 0
-        
-        
+              
         self.pre_evts = []
         self.post_evts = []
         self.pre_times = []
@@ -138,6 +137,11 @@ class DynapseRNN(object):
         self.proxy_neurons = [n for n in self.neurons if n.get_chip_id()==chip_id_proxy
              and (n.get_neuron_id() + n.get_core_id()*256) < self.num_inputs*2] 
         
+        self.rnn_neurons_idx_lookup = {}
+        i = 0
+        for neuron in self.rnn_neurons:
+            self.rnn_neurons_idx_lookup.update({neuron.get_neuron_id() + 256*neuron.get_core_id() + 1024*neuron.get_chip_id() : i})
+            i += 1
         ### Creating spikegen -> proxy_neurons connections
         
         for n in self.proxy_neurons:
@@ -201,6 +205,16 @@ class DynapseRNN(object):
         self.w_ternary = np.zeros([self.num_neurons, self.num_neurons])
         self.apply_new_matrix(self.w_ternary)
         
+#        if self.backend == 'rpyc':
+#            self.teleported_functions.append(rpyc.utils.classic.teleport_function(c, self.start_recording_spikes))
+#            self.teleported_functions.append(rpyc.utils.classic.teleport_function(c, self.stop_recording_spikes))
+#            self.teleported_functions.append(rpyc.utils.classic.teleport_function(c, self.process_recorded_evts))
+#            self.start_recording_spikes = lambda: self.teleported_functions[0](self)
+#            self.stop_recording_spikes = lambda: self.teleported_functions[1](self)
+#            self.process_recorded_evts = lambda: self.teleported_functions[2](self)
+        
+
+        
         if self.debug:
             print("RNN Init Complete")
             
@@ -220,70 +234,86 @@ class DynapseRNN(object):
         """
             Initializes the event filter
         """
-        if self.backend == 'ctxctl':
-            self.buf_evt_filter = CtxDynapse.BufferedEventFilter(self.model, self.neuron_ids)
-        else:
-            self.buf_evt_filter = self.c.modules.CtxDynapse.BufferedEventFilter(self.model, self.neuron_ids)
-        evts = self.buf_evt_filter.get_events() # flush the event filter to start a new recording
-        self.recording_start_time = time()
+        if self.backend == 'rpyc':
+            self.c.execute('rt.start_recording_spikes()')
+        else:                   
+            model = CtxDynapse.model
+            self.buf_evt_filter = CtxDynapse.BufferedEventFilter(model, self.neuron_ids)
+            evts = self.buf_evt_filter.get_events() # flush the event filter to start a new recording
+            self.recording_start_time = time()
         
     def stop_recording_spikes(self):
         """
             Stores all recorded events and clears the event filter
         """
-        self.evts = self.buf_evt_filter.get_events()
-        self.recording_stop_time = time()
-        self.buf_evt_filter.clear()
+        if self.backend == 'rpyc':
+            self.c.execute('rt.stop_recording_spikes()')
+        else:
+            self.evts = self.buf_evt_filter.get_events()
+            self.recording_stop_time = time()
+            self.buf_evt_filter.clear()
+
         
     def process_recorded_evts(self):
         """
             Returns firing rates AND input rates based on recorded events and current
             weight matrix
         """
-        rates = []
-        input_rates = []
-        
-        if self.debug:
-            print("Counting the spikes...")
-        
-        # Preparing arrays and helper variables
-        for i in range(self.num_neurons):
-            rates.append([])
-            input_rates.append([])
-            for ts in range(self.timesteps):
-                rates[i].append(0)
-                input_rates[i].append(0)
-        
-        if len(self.evts) != 0:
-            ref_timestamp = self.evts[0].timestamp
-        time_bin_size = int((self.recording_stop_time - self.recording_start_time)*1e+06/self.timesteps)
-        
-        # Placing spikes in bins
-        for evt in self.evts:
-            n_id = evt.neuron.get_neuron_id() + 256*evt.neuron.get_core_id() + 1024*evt.neuron.get_chip_id()
-            idx = self.neuron_ids.index(n_id)
+        if self.backend == 'rpyc':
+            self.c.execute('rates = rt.process_recorded_evts()')
+            return self.c.namespace['rates']
+        else:
             
-            time_bin = (evt.timestamp - ref_timestamp)//time_bin_size
-#            print(idx, time_bin)
-            if time_bin < self.timesteps:
-                rates[idx][time_bin] += 1
-        
-        # Normalizing spike counts to rates
-        for i in range(self.num_neurons):
-            for ts in range(self.timesteps):
-                rates[i][ts] = rates[i][ts]/(time_bin_size/1e+06)
-        
-#        # Computing weighted input rate sums
-#        for i in range(self.num_neurons):
-#            pre_id = self.neuron_ids[i]
-#            for post_id in self.post_lookup[pre_id]:
-#                for ts in range(self.timesteps):
-#                    input_rates[self.neuron_ids.index(post_id)][ts] += rates[i][ts]*self.current_weight_matrix[(pre_id, post_id)]
-                    
-        if self.debug:
-            print("Returning rates...")
-                    
-        return rates #, input_rates
+            lookup = self.rnn_neurons_idx_lookup
+            evts = self.evts
+            rates = []
+            input_rates = []
+            
+            if self.debug:
+                print("Counting the spikes...")
+            
+            # Preparing arrays and helper variables
+            for i in range(self.num_neurons):
+                rates.append([])
+                input_rates.append([])
+                for ts in range(self.timesteps):
+                    rates[i].append(0)
+                    input_rates[i].append(0)
+            
+            if len(evts) != 0:
+                ref_timestamp = evts[0].timestamp
+            time_bin_size = int((self.recording_stop_time - self.recording_start_time)*1e+06/self.timesteps)
+            
+            if self.debug:
+                print("Binning...")
+            # Placing spikes in bins
+            for evt in evts:
+                n_id = evt.neuron.get_neuron_id() + 256*evt.neuron.get_core_id() + 1024*evt.neuron.get_chip_id()
+                idx = lookup[n_id]
+                
+                time_bin = (evt.timestamp - ref_timestamp)//time_bin_size
+    #            print(idx, time_bin)
+                if time_bin < self.timesteps:
+                    rates[idx][time_bin] += 1
+            
+            if self.debug:
+                print("Normalizing...")
+            # Normalizing spike counts to rates
+            for i in range(self.num_neurons):
+                for ts in range(self.timesteps):
+                    rates[i][ts] = rates[i][ts]/(time_bin_size/1e+06)
+            
+    #        # Computing weighted input rate sums
+    #        for i in range(self.num_neurons):
+    #            pre_id = self.neuron_ids[i]
+    #            for post_id in self.post_lookup[pre_id]:
+    #                for ts in range(self.timesteps):
+    #                    input_rates[self.neuron_ids.index(post_id)][ts] += rates[i][ts]*self.current_weight_matrix[(pre_id, post_id)]
+                        
+            if self.debug:
+                print("Returning rates...")
+                        
+            return rates #, input_rates
     
     
     def apply_new_matrix(self, w_ternary, print_w = False):
